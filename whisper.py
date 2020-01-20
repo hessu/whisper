@@ -1095,6 +1095,76 @@ def file_merge(fh_from, fh_to, time_from=None, time_to=None, now=None):
     __archive_update_many(fh_to, headerTo, archive, pointsToWrite)
 
 
+def merge_sum(paths_from, path_to):
+  """
+  Summarize data from a number of whisper files into a single file.
+  Each file must have the same archive configuration.
+  """
+  
+  with open(paths_from[0], 'rb') as fh_from:
+    print('Creating new whisper database: %s' % path_to)
+    headerFrom = __readHeader(fh_from)
+    archiveList = [(a['secondsPerPoint'], a['points']) for a in headerFrom['archives']]
+    create(path_to, archiveList, xFilesFactor=headerFrom['xFilesFactor'], aggregationMethod=headerFrom['aggregationMethod'])
+    size = os.stat(path_to).st_size
+    print('Created: %s (%d bytes)' % (path_to, size))
+    fh_to = open(path_to, 'rb+')
+  
+  file_merge_sum(fh_to, paths_from)
+
+def file_merge_sum(fh_to, paths_from):
+  headerTo = __readHeader(fh_to)
+  
+  now = int(time.time())
+  archiveTo = now
+  
+  archives = headerTo['archives']
+  archives.sort(key=operator.itemgetter('retention'))
+  
+  archive_data_src = []
+  for archive in archives:
+    archiveFrom = now - archive['retention']
+    # fetch initial values in target archive (all None, if it was just created)
+    (to_timeInfo, to_values) = __archive_fetch(fh_to, archive, archiveFrom, archiveTo)
+    
+    archive_data_src.append([archive, archiveFrom, to_timeInfo, to_values])
+  
+  # read all source files and sum it
+  for path_from in paths_from:
+    print("Reading: %s" % path_from)
+    with open(path_from, 'rb') as fh_from:
+      headerFrom = __readHeader(fh_from)
+      
+      if headerFrom['archives'] != headerTo['archives']:
+        raise NotImplementedError(
+          "%s and %s archive configurations are unalike. "
+          "Resize the input before merging" % (fh_from.name, fh_to.name))
+      
+      for archive, archiveFrom, to_timeInfo, to_values in archive_data_src:
+        (from_timeInfo, from_values) = __archive_fetch(fh_from, archive, archiveFrom, archiveTo)
+        (start, end, archive_step) = from_timeInfo
+        
+        # print("destination timeinfo", to_timeInfo)
+        # print("source timeinfo,", from_timeInfo)
+        # print("destination values", to_values)
+        # print("source values", from_values)
+        
+        for i in range(len(to_values)):
+          if from_values[i] is None:
+            continue
+          to_values[i] = (to_values[i] if to_values[i] is not None else 0) + from_values[i]
+  
+  for archive, archiveFrom, to_timeInfo, to_values in archive_data_src:
+    (start, end, archive_step) = to_timeInfo
+    #print("destination values", to_values)
+    pointsToWrite = []
+    for i in range(len(to_values)):
+      if to_values[i] is not None:
+        pointsToWrite.append((start + i * archive_step, to_values[i]))
+
+    #print("writing", pointsToWrite)
+    __archive_update_many(fh_to, headerTo, archive, pointsToWrite)
+
 def diff(path_from, path_to, ignore_empty=False, until_time=None, now=None):
   """ Compare two whisper databases. Each file must have the same archive configuration """
   with open(path_from, 'rb') as fh_from:
